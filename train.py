@@ -22,9 +22,10 @@ from utils import plotting
 # -----------------------------------------------------------------------------
 parser = argparse.ArgumentParser()
 # data I/O
-parser.add_argument('-i', '--data_dir', type=str, default='/local_home/tim/pxpp/data', help='Location for the dataset')
-parser.add_argument('-o', '--save_dir', type=str, default='/local_home/tim/pxpp/save', help='Location for parameter checkpoints and samples')
-parser.add_argument('-d', '--data_set', type=str, default='cifar', help='Can be either cifar|imagenet')
+parser.add_argument('-i', '--data_dir', type=str, default='/home/laurasmith/nikita/pixel-cnn/data/', help='Location for the dataset')
+parser.add_argument('-o', '--save_dir', type=str, default='/home/laurasmith/nikita/pixel-cnn/save_channel1/', help='Location for parameter checkpoints and samples')
+parser.add_argument('-d', '--data_set', type=str, default='mnist', help='Can be either mnist|cifar|imagenet')
+parser.add_argument('-spl', '--data_split', type=str, default='below_mean', help='Can be either above_mean|below_mean|right_pred|wrong_pred')
 parser.add_argument('-t', '--save_interval', type=int, default=20, help='Every how many epochs to write checkpoint/samples?')
 parser.add_argument('-r', '--load_params', dest='load_params', action='store_true', help='Restore training from previous model checkpoint?')
 # model
@@ -51,6 +52,7 @@ args = parser.parse_args()
 print('input args:\n', json.dumps(vars(args), indent=4, separators=(',',':'))) # pretty print args
 
 # -----------------------------------------------------------------------------
+args.save_dir = args.save_dir + args.data_split
 # fix random seed for reproducibility
 rng = np.random.RandomState(args.seed)
 tf.set_random_seed(args.seed)
@@ -70,10 +72,13 @@ if args.data_set == 'cifar':
 elif args.data_set == 'imagenet':
     import data.imagenet_data as imagenet_data
     DataLoader = imagenet_data.DataLoader
+elif args.data_set == "mnist":
+    import data.mnist_data as mnist_data
+    DataLoader = mnist_data.DataLoader
 else:
     raise("unsupported dataset")
-train_data = DataLoader(args.data_dir, 'train', args.batch_size * args.nr_gpu, rng=rng, shuffle=True, return_labels=args.class_conditional)
-test_data = DataLoader(args.data_dir, 'test', args.batch_size * args.nr_gpu, shuffle=False, return_labels=args.class_conditional)
+train_data = DataLoader(args.data_dir, args.data_split + '_train', args.batch_size * args.nr_gpu, rng=rng, shuffle=True, return_labels=args.class_conditional)
+test_data = DataLoader(args.data_dir, args.data_split + '_test', args.batch_size * args.nr_gpu, shuffle=False, return_labels=args.class_conditional)
 obs_shape = train_data.get_observation_size() # e.g. a tuple (32,32,3)
 assert len(obs_shape) == 3, 'assumed right now'
 
@@ -82,6 +87,7 @@ x_init = tf.placeholder(tf.float32, shape=(args.init_batch_size,) + obs_shape)
 xs = [tf.placeholder(tf.float32, shape=(args.batch_size, ) + obs_shape) for i in range(args.nr_gpu)]
 
 # if the model is class-conditional we'll set up label placeholders + one-hot encodings 'h' to condition on
+# import ipdb; ipdb.set_trace()
 if args.class_conditional:
     num_labels = train_data.get_num_labels()
     y_init = tf.placeholder(tf.int32, shape=(args.init_batch_size,))
@@ -117,14 +123,15 @@ for i in range(args.nr_gpu):
     with tf.device('/gpu:%d' % i):
         # train
         out = model(xs[i], hs[i], ema=None, dropout_p=args.dropout_p, **model_opt)
-        loss_gen.append(loss_fun(tf.stop_gradient(xs[i]), out))
+        # import ipdb; ipdb.set_trace()
+        loss_gen.append(loss_fun(tf.stop_gradient(xs[i]), out)[1])
 
         # gradients
         grads.append(tf.gradients(loss_gen[i], all_params, colocate_gradients_with_ops=True))
 
         # test
         out = model(xs[i], hs[i], ema=ema, dropout_p=0., **model_opt)
-        loss_gen_test.append(loss_fun(xs[i], out))
+        loss_gen_test.append(loss_fun(xs[i], out)[1])
 
         # sample
         out = model(xs[i], h_sample[i], ema=ema, dropout_p=0, **model_opt)
@@ -198,6 +205,10 @@ with tf.Session() as sess:
                 ckpt_file = args.save_dir + '/params_' + args.data_set + '.ckpt'
                 print('restoring parameters from', ckpt_file)
                 saver.restore(sess, ckpt_file)
+                # import ipdb; ipdb.set_trace()
+                right_pred_test = np.load("data/right_pred_test.npy")
+               #  wrong_pred_test = np.load("data/wrong_pred_test.npy")
+               #  below_median_train = np.load("below_median_train.npy")
             else:
                 print('initializing the model...')
                 sess.run(initializer)
@@ -235,8 +246,9 @@ with tf.Session() as sess:
             sample_x = []
             for i in range(args.num_samples):
                 sample_x.append(sample_from_model(sess))
+            # import ipdb; ipdb.set_trace()
             sample_x = np.concatenate(sample_x,axis=0)
-            img_tile = plotting.img_tile(sample_x[:100], aspect_ratio=1.0, border_color=1.0, stretch=True)
+            img_tile = plotting.img_tile(sample_x[:100].reshape(sample_x.shape[:-1]), aspect_ratio=1.0, border_color=1.0, stretch=True)
             img = plotting.plot_img(img_tile, title=args.data_set + ' samples')
             plotting.plt.savefig(os.path.join(args.save_dir,'%s_sample%d.png' % (args.data_set, epoch)))
             plotting.plt.close('all')
@@ -245,3 +257,7 @@ with tf.Session() as sess:
             # save params
             saver.save(sess, args.save_dir + '/params_' + args.data_set + '.ckpt')
             np.savez(args.save_dir + '/test_bpd_' + args.data_set + '.npz', test_bpd=np.array(test_bpd))
+
+        if epoch == args.max_epochs - 1:
+            import ipdb; ipdb.set_trace()
+            car = 0
